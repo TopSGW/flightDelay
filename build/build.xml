@@ -1,0 +1,752 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="BoardingClaims" basedir="." default="build">
+    <!-- Command line prompts -->
+    <property name="deploy.env" value=""/>
+    <property name="migrate.db" value=""/>
+    <property name="ssh.host" value=""/>
+    <property name="ssh.username" value=""/>
+    <property name="ssh.password" value=""/>
+    <property name="git.branchspec" value=""/>
+    <property name="git.branch" value=""/>
+
+    <exec executable="sh" outputProperty="git.full.branchspec">
+        <arg line="get-git-branch.sh ${git.branch}"/>
+    </exec>
+
+    <!--
+        |***************************************************************************************************************
+        | Common variables setup.
+        |***************************************************************************************************************
+     -->
+    <property name="git.repository" value="git@bitbucket.org:mkues/boarding-claims.git"/>
+    <property name="deploy.target.releasesdir" value="/data/sites/web/boardingclaimscom/releases"/>
+    <property name="deploy.target.sitesdir" value="/data/sites/web/boardingclaimscom/subsites"/>
+    <property name="build.srcDir" value="${project.basedir}/src"/>
+    <property name="projects.basedir" value="${project.basedir}/.."/>
+
+    <property name="api.project.name" value="boarding-claims"/>
+    <property name="api.project.basedir" value="${projects.basedir}/api"/>
+    <property name="api.composer.toolsdir" value="${api.project.basedir}/vendor/bin"/>
+    <property name="api.compiledSrc.fileName" value="${api.project.name}-api-compiled.tar.gz"/>
+    <property name="api.deploy.target.releasesdir" value="${deploy.target.releasesdir}/${api.project.name}"/>
+    <property name="api.deploy.target.apidir" value="${deploy.target.sitesdir}/${api.project.name}"/>
+
+    <property name="app.project.name" value="${api.project.name}"/>
+    <property name="app.compiledSrc.fileName" value="${api.project.name}-app-compiled.tar.gz"/>
+    <property name="app.deploy.target.releasesdir" value="${deploy.target.releasesdir}/${app.project.name}"/>
+
+    <fileset id="api.php-files" dir="${projects.basedir}">
+        <include name="api/**/*.php"/>
+        <include name="public/index.php"/>
+    </fileset>
+
+    <target name="show-deploy-info">
+        <phingcall target="-show-deploy-info"/>
+    </target>
+
+    <target name="build" unless="build.done" depends="prepare, composer">
+        <fail message="Invalid branch specified (${git.branch}/${git.branchspec})"
+              if="${git.full.branchspec.is.invalid}"/>
+
+        <phingcall target="-show-deploy-info" inheritAll="true"/>
+
+        <phingcall target="-git.get.branch"/>
+
+        <phingcall target="-api.build"/>
+
+        <exec executable="rm">
+            <arg value="-rf"/>
+            <arg path="${build.srcDir}"/>
+        </exec>
+
+        <property name="build.done" value="true"/>
+    </target>
+
+    <!--
+        |***************************************************************************************************************
+        | Define the high level build targets.
+        |***************************************************************************************************************
+    -->
+    <target name="qa"
+            depends="prepare,composer,lint,phploc-ci,pdepend,phpmd-ci,phpcs-ci,phpcpd-ci,phpunit-ci,clean"
+            description="Builds the project with artifacts."/>
+
+    <target name="qa-no-artifacts"
+            depends="prepare,composer,lint,phploc,pdepend,phpunit-no-artifacts,phpcs,phpcpd,phpunit"
+            description="Builds the project without generating artifacts."/>
+
+    <target name="coverage"
+            depends="phpunit-ci,clean"
+            description="Builds the coverage for the project with artifacts."/>
+
+    <!--
+        |***************************************************************************************************************
+        | Deployment of the project
+        |***************************************************************************************************************
+        | This builds the project (api) and then deploys it on the server defined by the environment.
+    -->
+    <target name="deploy" unless="deploy.done" depends="clean">
+        <fail message="Invalid branch specified (${git.branch}/${git.branchspec})"
+              if="${git.full.branchspec.is.invalid}"/>
+
+        <phingcall target="-show-deploy-info" inheritAll="true"/>
+
+        <phingcall target="-git.get.branch"/>
+
+        <phingcall target="-api.build" inheritAll="true"/>
+        <phingcall target="-app.build" inheritAll="true"/>
+
+        <phingcall target="-server.prepare" inheritAll="true"/>
+
+        <phingcall target="-api.deploy" inheritAll="true"/>
+        <phingcall target="-app.deploy" inheritAll="true"/>
+
+        <!--<phingcall target="-api.migrate-db" inheritAll="true"/>-->
+
+        <phingcall target="-server.cleanup" inheritAll="true"/>
+
+        <exec executable="rm">
+            <arg value="-rf"/>
+            <arg path="${build.srcDir}"/>
+        </exec>
+
+        <property name="deploy.done" value="true"/>
+    </target>
+
+    <target name="rollback" unless="rollback.done">
+        <phingcall target="-api.rollback"/>
+
+        <property name="rollback.done" value="true"/>
+    </target>
+
+    <!--
+        |***************************************************************************************************************
+        | Lower level common build targets that can be used as modules.
+        |***************************************************************************************************************
+    -->
+    <target name="-show-deploy-info" unless="show-deploy-info.done">
+        <!--
+            |***********************************************************************************************************
+            | Add some common logging.
+            |***********************************************************************************************************
+        -->
+        <echo level="info" message="*********************************************************************************"/>
+        <echo level="info" message="* git.repository                -> ${git.repository}"/>
+        <echo level="info" message="* git.full.branchspec           -> ${git.full.branchspec}"/>
+        <echo level="info" message="*********************************************************************************"/>
+
+        <echo level="info" message="*********************************************************************************"/>
+        <echo level="info" message="* deploy.env                    -> ${deploy.env}"/>
+        <echo level="info" message="* migrate.db                    -> ${migrate.db}"/>
+        <echo level="info" message="* ssh.host                      -> ${ssh.host}"/>
+        <echo level="info" message="* ssh.username                  -> ${ssh.username}"/>
+        <echo level="info" message="* basedir                       -> ${project.basedir}"/>
+        <echo level="info" message="* api.composer.toolsdir         -> ${api.composer.toolsdir}"/>
+
+        <echo level="info" message="* build.srcDir                  -> ${build.srcDir}"/>
+
+        <echo level="info" message="* api.compiledSrc.fileName      -> ${api.compiledSrc.fileName}"/>
+        <echo level="info" message="* api.deploy.target.releasesdir -> ${api.deploy.target.releasesdir}"/>
+        <echo level="info" message="* api.deploy.target.apidir      -> ${api.deploy.target.apidir}"/>
+        <echo level="info" message="*********************************************************************************"/>
+
+        <property name="show-deploy-info.done" value="true"/>
+    </target>
+
+    <target name="clean"
+            unless="clean.done"
+            description="Cleanup build artifacts">
+        <exec executable="rm">
+            <arg value="-rf"/>
+            <arg path="${build.srcDir}"/>
+        </exec>
+
+        <exec executable="rm">
+            <arg value="-rf"/>
+            <arg path="${project.basedir}/docs"/>
+        </exec>
+
+        <exec executable="rm">
+            <arg value="-rf"/>
+            <arg path="${project.basedir}/logs"/>
+        </exec>
+
+        <property name="clean.done" value="true"/>
+    </target>
+
+    <target name="prepare"
+            unless="prepare.done"
+            depends="clean"
+            description="Prepare for build">
+        <mkdir dir="${project.basedir}/src"/>
+        <mkdir dir="${project.basedir}/docs/${api.project.name}/pdepend"/>
+        <mkdir dir="${project.basedir}/logs/${api.project.name}"/>
+
+        <property name="prepare.done" value="true"/>
+    </target>
+
+    <target name="composer"
+            unless="composer.done"
+            description="PHP - Installing dependencies for building the project.">
+        <exec executable="composer" dir="${api.project.basedir}" failonerror="true">
+            <arg value="install"/>
+            <arg value="--prefer-dist"/>
+            <arg value="--no-progress"/>
+            <arg value="--quiet"/>
+        </exec>
+
+        <property name="composer.done" value="true"/>
+    </target>
+
+    <target name="lint"
+            unless="lint.done"
+            description="Perform syntax check of sourcecode files">
+        <apply executable="php" dir="${api.project.basedir}" failonerror="true" parallel="false">
+            <arg value="-lf"/>
+
+            <fileset refid="api.php-files"/>
+        </apply>
+
+        <property name="lint.done" value="true"/>
+    </target>
+
+    <target name="phploc"
+            unless="phploc.done"
+            description="Measure project size using PHPLOC and print human readable output. Intended for usage on the command line.">
+        <exec executable="${api.composer.toolsdir}/phploc">
+            <arg value="--count-tests"/>
+            <arg path="${api.project.basedir}/api"/>
+            <arg path="${api.project.basedir}/routes"/>
+        </exec>
+
+        <property name="phploc.done" value="true"/>
+    </target>
+
+    <target name="phploc-ci"
+            depends="prepare"
+            unless="phploc-ci.done"
+            description="Measure project size using PHPLOC and log result in CSV and XML format. Intended for usage within a continuous integration environment.">
+        <exec executable="${api.composer.toolsdir}/phploc">
+            <arg value="--count-tests"/>
+            <arg value="--log-csv"/>
+            <arg path="${project.basedir}/logs/${api.project.name}/phploc.csv"/>
+            <arg value="--log-xml"/>
+            <arg path="${project.basedir}/logs/${api.project.name}/phploc.xml"/>
+            <arg path="${api.project.basedir}/api"/>
+            <arg path="${api.project.basedir}/routes"/>
+        </exec>
+
+        <property name="phploc-ci.done" value="true"/>
+    </target>
+
+    <target name="pdepend"
+            depends="prepare"
+            unless="pdepend-ci.done"
+            description="Calculate software metrics using PHP_Depend and log result in XML format. Intended for usage within a continuous integration environment.">
+        <exec executable="${api.composer.toolsdir}/pdepend">
+            <arg value="--jdepend-xml=${project.basedir}/logs/${api.project.name}/jdepend.xml"/>
+            <arg value="--jdepend-chart=${project.basedir}/docs/${api.project.name}/pdepend/dependencies.svg"/>
+            <arg value="--overview-pyramid=${project.basedir}/docs/${api.project.name}/pdepend/overview-pyramid.svg"/>
+            <arg path="${api.project.basedir}/api,${api.project.basedir}/routes"/>
+        </exec>
+
+        <property name="pdepend-ci.done" value="true"/>
+    </target>
+
+    <target name="phpmd"
+            unless="phpmd.done"
+            description="Perform project mess detection using PHPMD and print human readable output. Intended for usage on the command line before committing.">
+        <exec executable="${api.composer.toolsdir}/phpmd">
+            <arg path="${api.project.basedir}/api"/>
+            <arg value="text"/>
+            <arg path="${project.basedir}/config/phpmd.xml"/>
+            <arg value="exclude"/>
+            <arg path="${api.project.basedir}/bootstrap,${api.project.basedir}/config,${api.project.basedir}/database,${api.project.basedir}/node_modules,${api.project.basedir}/resources,${api.project.basedir}/storage,${api.project.basedir}/tests,${api.project.basedir}/vendor"/>
+        </exec>
+
+        <property name="phpmd.done" value="true"/>
+    </target>
+
+    <target name="phpmd-ci"
+            depends="prepare"
+            unless="phpmd-ci.done"
+            description="Perform project mess detection using PHPMD and log result in XML format. Intended for usage within a continuous integration environment.">
+        <exec executable="${api.composer.toolsdir}/phpmd">
+            <arg path="${api.project.basedir}/api"/>
+            <arg value="xml"/>
+            <arg path="${project.basedir}/config/phpmd.xml"/>
+            <arg value="--reportfile"/>
+            <arg path="${project.basedir}/logs/${api.project.name}/pmd.xml"/>
+            <arg value="exclude"/>
+            <arg path="${api.project.basedir}/bootstrap,${api.project.basedir}/config,${api.project.basedir}/database,${api.project.basedir}/node_modules,${api.project.basedir}/resources,${api.project.basedir}/storage,${api.project.basedir}/tests,${api.project.basedir}/vendor"/>
+        </exec>
+
+        <property name="phpmd-ci.done" value="true"/>
+    </target>
+
+    <target name="phpcs"
+            unless="phpcs.done"
+            description="Find coding standard violations using PHP_CodeSniffer and print human readable output. Intended for usage on the command line before committing.">
+        <exec executable="${api.composer.toolsdir}/phpcs">
+            <arg value="--standard=PSR2"/>
+            <arg value="--extensions=php"/>
+            <arg value="--ignore=autoload.php"/>
+            <arg path="${api.project.basedir}/api"/>
+            <arg path="${api.project.basedir}/routes"/>
+        </exec>
+
+        <property name="phpcs.done" value="true"/>
+    </target>
+
+    <target name="phpcs-ci"
+            depends="prepare"
+            unless="phpcs-ci.done"
+            description="Find coding standard violations using PHP_CodeSniffer and log result in XML format. Intended for usage within a continuous integration environment.">
+        <exec executable="${api.composer.toolsdir}/phpcs" output="/dev/null">
+            <arg value="--report=checkstyle"/>
+            <arg value="--report-file=${project.basedir}/logs/${api.project.name}/checkstyle.xml"/>
+            <arg value="--standard=PSR2"/>
+            <arg value="--extensions=php"/>
+            <arg value="--ignore=autoload.php"/>
+            <arg path="${api.project.basedir}/api"/>
+            <arg path="${api.project.basedir}/routes"/>
+        </exec>
+
+        <copy file="${project.basedir}/logs/${api.project.name}/checkstyle.xml"
+              tofile="${project.basedir}/logs/${api.project.name}/phpcs.xml"/>
+
+        <property name="phpcs-ci.done" value="true"/>
+    </target>
+
+    <target name="phpcs-fix"
+            unless="phpcs-fix.done"
+            description="Fix coding standard violations using PHP_CodeSniffer.">
+        <exec executable="${api.composer.toolsdir}/phpcbf">
+            <arg value="--standard=PSR2"/>
+            <arg value="--extensions=php"/>
+            <arg value="--ignore=autoload.php"/>
+            <arg path="${api.project.basedir}/api"/>
+            <arg path="${api.project.basedir}/routes"/>
+        </exec>
+
+        <property name="phpcs-fix.done" value="true"/>
+    </target>
+
+    <target name="phpcpd"
+            unless="phpcpd.done"
+            description="Find duplicate code using PHPCPD and print human readable output. Intended for usage on the command line before committing.">
+        <exec executable="${api.composer.toolsdir}/phpcpd">
+            <arg path="${api.project.basedir}/api"/>
+            <arg path="${api.project.basedir}/routes"/>
+        </exec>
+
+        <property name="phpcpd.done" value="true"/>
+    </target>
+
+    <target name="phpcpd-ci"
+            depends="prepare"
+            unless="phpcpd-ci.done"
+            description="Find duplicate code using PHPCPD and log result in XML format. Intended for usage within a continuous integration environment.">
+        <exec executable="${api.composer.toolsdir}/phpcpd">
+            <arg value="--log-pmd"/>
+            <arg path="${project.basedir}/logs/${api.project.name}/pmd-cpd.xml"/>
+            <arg path="${api.project.basedir}/api"/>
+            <arg path="${api.project.basedir}/routes"/>
+        </exec>
+
+        <property name="phpcpd-ci.done" value="true"/>
+    </target>
+
+    <target name="phpunit-no-artifacts"
+            unless="phpunit.done"
+            description="Run unit tests with PHPUnit">
+        <exec executable="${api.composer.toolsdir}/phpunit" failonerror="true">
+            <arg value="--configuration"/>
+            <arg path="${project.basedir}/config/phpunit-no-artifacts.xml"/>
+        </exec>
+
+        <property name="phpunit.done" value="true"/>
+    </target>
+
+    <target name="phpunit"
+            unless="phpunit.done"
+            description="Run unit tests with PHPUnit">
+        <exec executable="${api.composer.toolsdir}/phpunit" failonerror="true">
+            <arg value="--configuration"/>
+            <arg path="${api.project.basedir}/phpunit.xml"/>
+        </exec>
+
+        <property name="phpunit.done" value="true"/>
+    </target>
+
+    <target name="phpunit-ci"
+            depends="prepare"
+            unless="phpunit-ci.done"
+            description="Run unit tests with PHPUnit">
+        <exec executable="${api.composer.toolsdir}/phpunit" failonerror="true">
+            <arg value="--configuration"/>
+            <arg path="${project.basedir}/config/phpunit-ci.xml"/>
+        </exec>
+
+        <property name="phpunit-ci.done" value="true"/>
+    </target>
+
+    <!--
+        |***************************************************************************************************************
+        | Lower level deployment build targets.
+        |***************************************************************************************************************
+    -->
+    <target name="-git.get.branch" unless="git.get.branch.done">
+        <!-- Log the variables on screen -->
+        <echo level="verbose" message="git.repository      -> ${git.repository}"/>
+        <echo level="verbose" message="git.full.branchspec -> ${git.full.branchspec}"/>
+        <echo level="verbose" message="ssh.host            -> ${ssh.host}"/>
+        <echo level="verbose" message="ssh.username        -> ${ssh.username}"/>
+
+        <exec executable="mkdir">
+            <arg line="-p ${build.srcDir}"/>
+        </exec>
+
+        <!-- 1. Get the latest git archive for the specified environment.-->
+        <echo message="1. Retrieving git archive."/>
+        <echo message="cmd = clone -b ${git.full.branchspec} --depth 1 ${git.repository} ${build.srcDir}"/>
+        <!--<exec executable="git" failonerror="true">-->
+            <!--<arg line="clone -b ${git.full.branchspec} &#45;&#45;depth 1 ${git.repository} ${build.srcDir}"/>-->
+        <!--</exec>-->
+
+        <gitclone branch="${git.full.branchspec}"
+                  repository="${git.repository}"
+                  targetPath="${build.srcDir}"
+                  depth="1"
+                  singleBranch="true">
+        </gitclone>
+
+        <property name="git.get.branch.done" value="true"/>
+    </target>
+
+    <!--
+        |***************************************************************************************************************
+        | Lower level deployment build targets for the api sub-project.
+        |***************************************************************************************************************
+    -->
+    <target name="-server.prepare" unless="server.prepare.done">
+        <!-- 1. Creating new folder for release location -->
+        <echo message="1. Creating current folder for release location (only for new projects)."/>
+        <ssh command="mkdir -p ${api.deploy.target.releasesdir}/current"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <!-- 2. Creating new folder for release location -->
+        <echo message="2. Creating new folder for release location."/>
+        <ssh command="mkdir -p ${api.deploy.target.releasesdir}/new/api"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <ssh command="mkdir -p ${api.deploy.target.releasesdir}/new/app"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <!-- 3. Backup the previous release to old -->
+        <echo message="3. Backup the previous release to old."/>
+        <ssh command="mkdir -p ${api.deploy.target.releasesdir}/previous"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <ssh command="mv ${api.deploy.target.releasesdir}/previous ${api.deploy.target.releasesdir}/old"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <!-- 4. Copy the current release into the previous release location -->
+        <echo message="4. Copying the current release into the previous release directory."/>
+        <ssh command="mkdir -p ${api.deploy.target.releasesdir}/current"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <ssh command="mv ${api.deploy.target.releasesdir}/current ${api.deploy.target.releasesdir}/previous"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <property name="server.prepare.done" value="true"/>
+    </target>
+
+    <target name="-api.build" unless="api.build.done">
+        <!-- 1. Installing composer packages. -->
+        <echo message="1. Installing composer packages."/>
+        <exec executable="composer" dir="${build.srcDir}/api">
+            <arg line="install --no-dev --prefer-dist --quiet"/>
+        </exec>
+        <echo message=""/>
+        <echo message="--------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 2. Remove unneeded directories. -->
+        <echo message="2. Trimming down directories."/>
+        <exec executable="rm">
+            <arg line="-rf ${build.srcDir}/api/.idea"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="-rf ${build.srcDir}/api/node_modules"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="-rf ${build.srcDir}/api/tests"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="${build.srcDir}/api/composer.json"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="${build.srcDir}/api/composer.lock"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="${build.srcDir}/api/phpunit.xml"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="${build.srcDir}/api/readme.md"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="${build.srcDir}/api/.env.example"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="${build.srcDir}/api/.gitattributes"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="${build.srcDir}/api/.gitignore"/>
+        </exec>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!--3. Compress the result for uploading to the server environment.-->
+        <echo message="3. Compressing compiled application into ${build.srcDir}/${api.compiledSrc.fileName}."/>
+        <tar destfile="${project.basedir}/${api.compiledSrc.fileName}"
+             longfile="gnu"
+             basedir="${build.srcDir}/api"
+             compression="gzip">
+        </tar>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <property name="api.build.done" value="true"/>
+    </target>
+
+    <target name="-api.deploy" unless="api.deploy.done">
+        <!-- 1. Copy the deployment archive into the environment -->
+        <echo message="1. Copying the deployment archive into server environment (${api.deploy.target.releasesdir})."/>
+        <scp file="${project.basedir}/${api.compiledSrc.fileName}"
+             todir="${api.deploy.target.releasesdir}"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 2. Extract the tar file on the remote server. -->
+        <echo message="2. Extracting the deployment archive into ${api.deploy.target.releasesdir}/new."/>
+        <ssh command="tar xzf ${api.deploy.target.releasesdir}/${api.compiledSrc.fileName} -C ${api.deploy.target.releasesdir}/new/api"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 3. Remove the compressed file on the server -->
+        <echo message="3. Removing the deployment archive on the server."/>
+        <ssh command="rm ${api.deploy.target.releasesdir}/${api.compiledSrc.fileName}"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 4. Remove the compressed file in the local build folder -->
+        <echo message="4. Removing the deployment archive on the local build folder."/>
+        <exec executable="rm">
+            <arg line="${project.basedir}/${api.compiledSrc.fileName}"/>
+        </exec>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 5. Copy the .env  file into the new release. -->
+        <echo message="5. Copy the .env file (${api.deploy.target.releasesdir}/boardingclaimscom.${deploy.env}.env) into the new release."/>
+        <ssh command="cp ${api.deploy.target.releasesdir}/boardingclaimscom.${deploy.env}.env ${api.deploy.target.releasesdir}/new/api/.env"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <property name="api.deploy.done" value="true"/>
+    </target>
+
+    <target name="-api.migrate-db" unless="api.migrate-db.done">
+        <!-- 1. Migrate the database on the server. -->
+        <echo message="1. Migrate the database on the server."/>
+        <echo message="cmd = php7.0 ${build.srcDir}/api/artisan migrate with seeding"/>
+        <ssh command="php7.0 ${api.deploy.target.releasesdir}/new/api/artisan migrate:refresh --seed --force"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <property name="api.migrate-db.done" value="true"/>
+    </target>
+
+    <target name="-api.rollback" unless="api.rollback.done">
+        <!-- 1. Copy the current release into the previous release location -->
+        <echo message="1. Copying the current release into the new release directory."/>
+        <ssh command="mv ${api.deploy.target.releasesdir}/current ${api.deploy.target.releasesdir}/new"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <!-- 2. Copy the previous release into the current release location -->
+        <echo message="2. Copying the previous release into the current release directory."/>
+        <ssh command="mv ${api.deploy.target.releasesdir}/previous ${api.deploy.target.releasesdir}/current"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <!-- 3. Removing the new directory. -->
+        <echo message="3. Removing the new directory"/>
+        <ssh command="rm -rf ${api.deploy.target.releasesdir}/new"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <echo level="info" message="*********************************************************************************"/>
+        <echo level="warning"
+              message="* NOTE:                                                                                      *"/>
+        <echo level="warning"
+              message="* You should rollback the database manually if required.                                     *"/>
+        <echo level="info" message="*********************************************************************************"/>
+
+        <property name="api.rollback.done" value="true"/>
+    </target>
+
+    <target name="-app.build" unless="app.build.done">
+        <!-- 1. Installing npm packages. -->
+        <echo message="1. Installing npm packages."/>
+        <exec executable="yarn" dir="${build.srcDir}/app">
+            <arg line="install"/>
+        </exec>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+        <echo message="2. Building the frontend packages."/>
+        <exec executable="npm" dir="${build.srcDir}/app">
+            <arg line="run build"/>
+        </exec>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 3. Compress the result for uploading to the server environment.-->
+        <echo message="3. Compressing compiled application into ${build.srcDir}/${app.compiledSrc.fileName}."/>
+        <tar destfile="${project.basedir}/${app.compiledSrc.fileName}"
+             longfile="gnu"
+             basedir="${build.srcDir}/app/dist"
+             compression="gzip">
+        </tar>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <property name="app.build.done" value="true"/>
+    </target>
+
+    <target name="-app.deploy" unless="app.deploy.done">
+        <!-- 1. Copy the deployment archive into the environment -->
+        <echo message="1. Copying the deployment archive into server environment (${app.deploy.target.releasesdir})."/>
+        <scp file="${project.basedir}/${app.compiledSrc.fileName}"
+             todir="${app.deploy.target.releasesdir}"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 2. Extract the tar file on the remote server. -->
+        <echo message="2. Extracting the deployment archive into ${app.deploy.target.releasesdir}/new."/>
+        <ssh command="tar xzf ${app.deploy.target.releasesdir}/${app.compiledSrc.fileName} -C ${app.deploy.target.releasesdir}/new/app"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 3. Remove the compressed file on the server -->
+        <echo message="3. Removing the deployment archive on the server."/>
+        <ssh command="rm ${app.deploy.target.releasesdir}/${app.compiledSrc.fileName}"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 4. Remove the compressed file in the local build folder -->
+        <echo message="4. Removing the deployment archive on the local build folder."/>
+        <exec executable="rm">
+            <arg line="${project.basedir}/${app.compiledSrc.fileName}"/>
+        </exec>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <property name="app.deploy.done" value="true"/>
+    </target>
+
+    <target name="-server.cleanup">
+        <!-- 1. Rename the new release. -->
+        <echo message="1. Renaming the new folder to current"/>
+        <ssh command="mv ${api.deploy.target.releasesdir}/new ${api.deploy.target.releasesdir}/current"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <!-- 2. Artisan optimize. -->
+        <echo message="2. Artisan optimize."/>
+        <ssh command="php7.0 ${api.deploy.target.releasesdir}/current/api/artisan optimize"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 3. Artisan cache the config. -->
+        <echo message="3. Artisan cache the config."/>
+        <ssh command="php7.0 ${api.deploy.target.releasesdir}/current/api/artisan config:cache"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+        <echo message=""/>
+        <echo message="----------------------------------------------------------------------------------------------"/>
+        <echo message=""/>
+
+        <!-- 4. Remove the backup of the current release (it's still available in the previous folder). -->
+        <echo message="4. Removing the old folder."/>
+        <ssh command="rm -rf ${api.deploy.target.releasesdir}/old"
+             host="${ssh.host}"
+             username="${ssh.username}"
+             password="${ssh.password}"/>
+
+        <property name="server.cleanup.done" value="true"/>
+    </target>
+</project>

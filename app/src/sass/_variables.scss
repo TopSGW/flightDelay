@@ -1,0 +1,25 @@
+$color-white: #fff;
+
+$color-accent: #BCD432;
+
+$color-main-light: #A3C8F2;
+$color-main-middle: #055087;
+$color-main-dark: #022D47;
+
+$body-text-color: #2D2D2D;
+$body-font-size: 11pt;
+$header-font-size: 11pt;
+
+$font-family-roboto: Roboto, sans-serif !default;
+$font-family-lato: Lato, sans-serif !default;
+
+$font-size-base: 11pt;
+$page-gutter: 2rem;
+
+$grid-breakpoints: (
+  xs: 0,
+  sm: 600px,
+  md: 768px,
+  lg: 992px,
+  xl: 1200px
+) !default;

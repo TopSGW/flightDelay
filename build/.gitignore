@@ -1,0 +1,8 @@
+/dependencies.check
+.idea/
+src
+docs
+logs
+/cache.properties
+boarding-claims-api-compiled.tar.gz
+boarding-claims-app-compiled.tar.gz

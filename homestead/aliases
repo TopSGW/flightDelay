@@ -1,0 +1,36 @@
+alias ..="cd .."
+alias ...="cd ../.."
+
+alias l="ls -al"
+alias h="cd ~"
+alias c="clear"
+
+alias co="cd Code"
+alias b="cd ~/Code/boarding-claims/build/"
+alias app="cd ~/Code/boarding-claims/app/"
+alias api="cd ~/Code/boarding-claims/api/"
+
+alias xoff='sudo phpdismod -s cli xdebug'
+alias xon='sudo phpenmod -s cli xdebug'
+
+alias artisan="php artisan"
+
+alias pdepend="~/Code/boarding-claims/api/vendor/bin/pdepend"
+alias phpcpd="~/Code/boarding-claims/api/vendor/bin/phpcpd"
+alias phpcs="~/Code/boarding-claims/api/vendor/bin/phpcs"
+alias phploc="~/Code/boarding-claims/api/vendor/bin/phploc"
+alias phpmd="~/Code/boarding-claims/api/vendor/bin/phpmd"
+alias phpunit="~/Code/boarding-claims/api/vendor/bin/phpunit"
+
+function serve() {
+	if [[ "$1" && "$2" ]]
+	then
+		sudo dos2unix /vagrant/scripts/serve.sh
+		sudo bash /vagrant/scripts/serve.sh "$1" "$2"
+	else
+		echo "Error: missing required parameters."
+		echo "Usage: "
+		echo "  serve domain path"
+	fi
+}
+
